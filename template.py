@@ -14,6 +14,7 @@ Hướng dẫn:
 
 import os
 import time
+from tracemalloc import start
 from typing import Any, Callable
 
 from dotenv import load_dotenv
@@ -71,7 +72,28 @@ def call_openai(
     """
     # TODO: import OpenAI, tạo client, gọi chat.completions.create,
     #       đo start/end time, trả về (response_text, latency)
-    raise NotImplementedError("Implement call_openai")
+    def call_openai(
+        prompt: str,
+        model: str = OPENAI_MODEL,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_tokens: int = 256,
+    ) -> tuple[str, float]:
+        from openai import OpenAI          # import BÊN TRONG hàm
+
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        start = time.perf_counter()
+        response = client.chat.completions.create(
+            model=model,                                   # dùng tham số model, không hard-code
+            messages=[{"role": "user", "content": prompt}], # dùng tham số prompt
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+        )
+        latency = time.perf_counter() - start
+
+        return response.choices[0].message.content, latency
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +115,19 @@ def call_openai_mini(
         Tái sử dụng call_openai() với model=OPENAI_MINI_MODEL — 1 dòng code.
     """
     # TODO: gọi call_openai với model=OPENAI_MINI_MODEL
-    raise NotImplementedError("Implement call_openai_mini")
+    def call_openai_mini(
+        prompt: str,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_tokens: int = 256,
+    ) -> tuple[str, float]:
+        return call_openai(
+            prompt,
+            model=OPENAI_MINI_MODEL,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +151,23 @@ def compare_models(prompt: str) -> dict:
         (0.75 từ ≈ 1 token — ước lượng thô; Part 2 sẽ tính chính xác hơn)
     """
     # TODO: gọi call_openai và call_openai_mini, ghép dict kết quả
-    raise NotImplementedError("Implement compare_models")
+    def compare_models(prompt: str) -> dict:
+        # 1. Gọi cả hai model
+        gpt4o_text, gpt4o_latency = call_openai(prompt)
+        mini_text, mini_latency = call_openai_mini(prompt)
+
+        # 2. Ước tính chi phí output của GPT-4o (cách thô theo hướng dẫn)
+        cost = (len(gpt4o_text.split()) / 0.75) / 1000 \
+            * PRICING_PER_1K_TOKENS["gpt-4o"]["output"]
+
+        # 3. Trả về đúng 5 key
+        return {
+            "gpt4o_response": gpt4o_text,
+            "mini_response": mini_text,
+            "gpt4o_latency": gpt4o_latency,
+            "mini_latency": mini_latency,
+            "gpt4o_cost_estimate": cost,
+        }
 
 
 # ===========================================================================
@@ -153,7 +203,30 @@ def chat_with_system_prompt(
         ]
     """
     # TODO: giống call_openai nhưng messages có thêm phần tử role="system"
-    raise NotImplementedError("Implement chat_with_system_prompt")
+    def chat_with_system_prompt(
+        system_prompt: str,
+        user_prompt: str,
+        model: str = OPENAI_MODEL,
+        temperature: float = 0.7,
+        max_tokens: int = 256,
+    ) -> tuple[str, float]:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        start = time.perf_counter()
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        latency = time.perf_counter() - start
+
+        return response.choices[0].message.content, latency
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +253,14 @@ def count_tokens(text: str, model: str = OPENAI_MODEL) -> int:
         max(1, len(text) // 4)   (trung bình 1 token ≈ 4 ký tự)
     """
     # TODO: dùng tiktoken để đếm token, có fallback khi lỗi
-    raise NotImplementedError("Implement count_tokens")
+    def count_tokens(text: str, model: str = OPENAI_MODEL) -> int:
+        try:
+            import tiktoken
+            enc = tiktoken.encoding_for_model(model)
+            return len(enc.encode(text))
+        except Exception:
+            # Fallback: ước lượng 1 token ≈ 4 ký tự
+            return max(1, len(text) // 4)
 
 
 # ---------------------------------------------------------------------------
@@ -207,8 +287,24 @@ def estimate_cost(prompt: str, response: str, model: str = OPENAI_MODEL) -> dict
          miễn phí — thì lấy giá gpt-4o làm tham chiếu học tập)
     """
     # TODO: đếm token prompt/response, tra bảng giá, trả về dict 5 key
-    raise NotImplementedError("Implement estimate_cost")
+    def estimate_cost(prompt: str, response: str, model: str = OPENAI_MODEL) -> dict:
+        input_tokens = count_tokens(prompt, model)
+        output_tokens = count_tokens(response, model)
 
+        # Dùng .get() có fallback — quan trọng khi dùng NVIDIA NIM
+        pricing = PRICING_PER_1K_TOKENS.get(model, PRICING_PER_1K_TOKENS["gpt-4o"])
+
+        input_cost = input_tokens / 1000 * pricing["input"]
+        output_cost = output_tokens / 1000 * pricing["output"]
+        total_cost = input_cost + output_cost
+
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "input_cost": input_cost,
+            "output_cost": output_cost,
+            "total_cost": total_cost,
+        }
 
 # ===========================================================================
 # PART 3 — STREAMING & ĐỘ BỀN (Block 3: phút 150–190)
@@ -236,7 +332,38 @@ def streaming_chatbot() -> None:
         - Cắt history còn 3 lượt cuối (6 message): history = history[-6:]
     """
     # TODO: vòng lặp while, đọc input, stream phản hồi, duy trì history
-    raise NotImplementedError("Implement streaming_chatbot")
+    def streaming_chatbot() -> None:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        history = []
+
+        while True:
+            user_msg = input("Bạn: ")
+            if user_msg.strip().lower() in ("quit", "exit"):
+                break
+
+            # Ghép history + tin nhắn mới
+            messages = history + [{"role": "user", "content": user_msg}]
+
+            stream = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                stream=True,
+            )
+
+            # In từng chunk và gom thành reply
+            reply = ""
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                print(delta, end="", flush=True)
+                reply += delta
+            print()  # xuống dòng sau khi hết stream
+
+            # Cập nhật history và cắt còn 3 lượt (6 message)
+            history.append({"role": "user", "content": user_msg})
+            history.append({"role": "assistant", "content": reply})
+            history = history[-6:]
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +390,18 @@ def retry_with_backoff(
         Exception cuối cùng của fn() sau khi hết số lần thử.
     """
     # TODO: vòng lặp retry với exponential backoff
-    raise NotImplementedError("Implement retry_with_backoff")
+    def retry_with_backoff(
+        fn: Callable,
+        max_retries: int = 3,
+        base_delay: float = 0.1,
+    ) -> Any:
+        for attempt in range(max_retries + 1):
+            try:
+                return fn()
+            except Exception:
+                if attempt == max_retries:
+                    raise          # hết số lần thử → ném lỗi cuối cùng
+                time.sleep(base_delay * (2 ** attempt))
 
 
 # ===========================================================================
