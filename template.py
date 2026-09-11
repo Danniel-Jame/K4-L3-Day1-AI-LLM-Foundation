@@ -460,7 +460,68 @@ def run_assistant(
                 "total_cost": total_cost, "history": history}
     """
     # TODO: triển khai theo khung sườn trong docstring
-    raise NotImplementedError("Implement run_assistant")
+    if get_input is None:
+        get_input = input
+
+    from openai import OpenAI
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+    history = []
+    num_turns = 0
+    total_tokens = 0
+    total_cost = 0.0
+
+    # 2. Vòng lặp chính
+    while True:
+        # Kiểm tra max_turns TRƯỚC khi đọc input
+        if max_turns is not None and num_turns >= max_turns:
+            break
+
+        user_msg = get_input()
+        if user_msg.strip().lower() in ("quit", "exit"):
+            break
+
+        # 3. Ghép messages: system + history + tin nhắn mới
+        messages = (
+            [{"role": "system", "content": persona}]
+            + history
+            + [{"role": "user", "content": user_msg}]
+        )
+
+        # 4. Gọi API qua retry + streaming
+        stream = retry_with_backoff(
+            lambda: client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                stream=True,
+            )
+        )
+
+        # 5. Gom reply từ stream
+        reply = ""
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            print(delta, end="", flush=True)
+            reply += delta
+        print()  # xuống dòng sau khi hết stream
+
+        # 6. Cập nhật history và cắt còn 6 message (3 lượt)
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": reply})
+        history = history[-6:]
+
+        # 7. Cộng dồn thống kê
+        num_turns += 1
+        total_tokens += count_tokens(user_msg) + count_tokens(reply)
+        total_cost += estimate_cost(user_msg, reply)["total_cost"]
+
+    # 8. Trả về dict thống kê
+    return {
+        "num_turns": num_turns,
+        "total_tokens": total_tokens,
+        "total_cost": total_cost,
+        "history": history,
+    }
 
 
 # ===========================================================================
